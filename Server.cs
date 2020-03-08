@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using RestSharp;
+using ScalewaySpaces;
 
 
 namespace S3FTPServer
@@ -16,12 +17,14 @@ namespace S3FTPServer
 		public int serverPort = 21;
 		//public IRestClient api = new RestClient("https://localhost:44343/api/ftp/");
 		public Api api;
+		public static ScalewaySpace Space;
 		
 		public Server()
 		{
 			serverIP = GetLocalIPAddress();
 			Console.WriteLine("Starting Server {0}:{1}", serverIP, serverPort);
 			api = new Api();
+			Space = new ScalewaySpace();
 			server = new TcpListener(serverIP, serverPort);
 			server.Start();
 			StartListener();
@@ -50,7 +53,7 @@ namespace S3FTPServer
 
 		private void HandleDevice(Object obj)
 		{
-			ClientConnection _connection = new ClientConnection((TcpClient)obj, api);
+			ClientConnection _connection = new ClientConnection((TcpClient)obj, api, Space);
 			/*
 			TcpClient client = (TcpClient)obj;
 			NetworkStream stream = client.GetStream();

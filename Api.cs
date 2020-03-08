@@ -17,7 +17,6 @@ namespace S3FTPServer
 		public Api()
 		{
 			client = new RestClient("https://localhost:44343/api/ftp");
-			ScalewaySpace space = new ScalewaySpace();
 		}
 
 		public static bool LoginExists(string login)
