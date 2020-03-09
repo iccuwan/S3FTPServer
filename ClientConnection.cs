@@ -11,6 +11,8 @@ using ScalewaySpaces;
 using Amazon.S3.Model;
 using System.Text.RegularExpressions;
 using System.Linq;
+using System.Timers;
+using S3FTPServer.Models;
 
 namespace S3FTPServer
 {
@@ -24,6 +26,8 @@ namespace S3FTPServer
 		private string path = "/";
 		private string transferType;
 
+		private const long MB = 1024 * 1024;
+
 		private CultureInfo enCulture = CultureInfo.CreateSpecificCulture("en-US");
 
 		private TcpClient client;
@@ -35,6 +39,10 @@ namespace S3FTPServer
 
 		private Api api;
 		private ScalewaySpace Space;
+
+		private Timer errorTimer;
+
+		public List<DirectoryObject> ObjectsInDirectory = new List<DirectoryObject>();
 
 		public ClientConnection(TcpClient _client, Api _api, ScalewaySpace _space)
 		{
@@ -72,6 +80,10 @@ namespace S3FTPServer
 					}
 					if (response == null)
 					{
+						if (errorTimer != null)
+						{
+							errorTimer.Close();
+						}
 						switch (cmd)
 						{
 							case "USER":
@@ -94,10 +106,20 @@ namespace S3FTPServer
 								response = List(arguments);
 								break;
 							case "CWD":
+								//errorTimer = new Timer(10000);
+								//errorTimer.Elapsed += Timeout;
+								//errorTimer.AutoReset = false;
+								//errorTimer.Enabled = true;
 								response = ChangeDirectory(arguments);
 								break;
 							case "CDUP":
 								response = ChangeDirectory("..");
+								break;
+							case "RETR":
+								response = Retrieve(arguments);
+								break;
+							case "STOR":
+								response = Store(arguments);
 								break;
 							default:
 								response = "502 Command not implemented";
@@ -110,6 +132,10 @@ namespace S3FTPServer
 					}
 					else
 					{
+						if (errorTimer != null)
+						{
+							errorTimer.Close();
+						}
 						SendMessage(response);
 						if (response.StartsWith("221"))
 						{
@@ -123,6 +149,11 @@ namespace S3FTPServer
 				Console.WriteLine("Client connection exception: {0}", e.ToString());
 				//client.Close();
 			}
+		}
+
+		private void Timeout(Object source, ElapsedEventArgs e)
+		{
+			SendMessage("503 Timeout");
 		}
 
 		private string User(string _username)
@@ -202,45 +233,200 @@ namespace S3FTPServer
 				StreamWriter dataWriter = new StreamWriter(dataStream, Encoding.ASCII);
 
 				List<S3Object> objects = Space.GetObjects(GetValidPath(pathname));
+				ObjectsInDirectory.Clear();
+				Console.WriteLine("Objects list cleared");
 				foreach (S3Object obj in objects)
 				{
 					string filename = DeletePathFromObjectKey(obj.Key);
-					
-					string date = obj.LastModified < DateTime.Now - TimeSpan.FromDays(180) ?
-						obj.LastModified.ToString("MMM dd yyyy", enCulture) :
-						obj.LastModified.ToString("MMM dd HH:mm", enCulture);
-					string line;
-					if (obj.Key.EndsWith("/"))
+					int count = filename.Split('/').Length - 1;
+					if (count == 1 && filename.EndsWith('/') || count == 0 && !string.IsNullOrEmpty(filename))
 					{
-						line = string.Format("drwxr-xr-x    2 {3}     {3}     {0,8} {1} {2}",
-							"4096", date, filename, login);
+
+						string date = obj.LastModified < DateTime.Now - TimeSpan.FromDays(180) ?
+							obj.LastModified.ToString("MMM dd yyyy", enCulture) :
+							obj.LastModified.ToString("MMM dd HH:mm", enCulture);
+						string line;
+						DirectoryObject dirObj;
+						if (obj.Key.EndsWith("/"))
+						{
+							filename = filename.Remove(filename.Length - 1);
+							line = string.Format("drwxr-xr-x    2 {3}     {3}     {0,8} {1} {2}",
+								"4096", date, filename, login);
+							dirObj = new DirectoryObject(filename, obj.Key, ObjectType.Directory);
+						}
+						else
+						{
+							line = string.Format("-rw-r--r-- 2 {3} {3}           {0,8} {1} {2}",
+								obj.Size, date, filename, login);
+							dirObj = new DirectoryObject(filename, obj.Key, ObjectType.File);
+						}
+						ObjectsInDirectory.Add(dirObj);
+						Console.WriteLine("{0} {1} added to objects list", dirObj.Type.ToString(), filename);
+						dataWriter.WriteLine(line);
+						dataWriter.Flush();
 					}
-					else
-					{
-						line = string.Format("-rw-r--r-- 2 {3} {3}           {0,8} {1} {2}",
-							obj.Size, date, filename, login);
-					}
-					dataWriter.WriteLine(line);
-					dataWriter.Flush();
 				}
 				dataClient.Close();
 				SendMessage("226 Transfer complete.");
 			}
 		}
 
+		private string Retrieve(string pathname)
+		{
+			//DirectoryObject file = ObjectsInDirectory.Find(x => x.Name == pathname && x.Type == ObjectType.File);
+			string filepath = root + path + pathname;
+			if (!string.IsNullOrEmpty(pathname) && Space.ObjectExists(filepath))
+			{
+				passiveListener.BeginAcceptTcpClient(DoRetrieve, filepath);
+				return string.Format("150 Opening passive mode data transfer for RETR");
+			}
+			return "550 File Not Found";
+		}
+
+		private void DoRetrieve(IAsyncResult result)
+		{
+			TcpClient dataClient = passiveListener.EndAcceptTcpClient(result);
+			string pathname = (string)result.AsyncState;
+
+			using (NetworkStream dataStream = dataClient.GetStream())
+			{
+				using (Stream s = Space.StreamFileFromS3(pathname))
+				{
+					CopyStream(s, dataStream, 4096);
+				}
+			}
+			dataClient.Close();
+			SendMessage("226 Closing data connection, file transfer successful");
+		}
+
+		private long CopyStream(Stream input, Stream output, int bufferSize)
+		{
+			byte[] buffer = new byte[bufferSize];
+			int count = 0;
+			long total = 0;
+
+			while ((count = input.Read(buffer, 0, buffer.Length)) > 0)
+			{
+				output.Write(buffer, 0, count);
+				total += count;
+			}
+			return total;
+		}
+
+		private long CopyStreamUpload(NetworkStream input, MemoryStream output, long bufferSize, string path)
+		{
+			byte[] buffer = new byte[bufferSize];
+			byte[] bigBuffer = new byte[15 * MB];
+			int count = 0;
+			long totalPart = 0;
+			int partNumber = 1;
+			long total = 0;
+			long totalUpload = 0;
+
+			bool multipart = false;
+			List<UploadPartResponse> uploadParts = new List<UploadPartResponse>();
+			InitiateMultipartUploadResponse uploadInfo = new InitiateMultipartUploadResponse();
+
+			while ((count = input.Read(bigBuffer, 0, bigBuffer.Length)) > 0)
+			{
+				output.Write(bigBuffer , 0, count);
+				total += count;
+				totalPart += count;
+				if (totalPart > 5 * MB)
+				{
+					if (!multipart)
+					{
+						uploadInfo = Space.InitMultipartUpload(path);
+						multipart = true;
+					}
+					else
+					{
+
+						UploadPartResponse uploadedPart = Space.UploadPart(path, uploadInfo.UploadId, partNumber, totalPart, output, false);
+						uploadParts.Add(uploadedPart);
+						partNumber++;
+						totalUpload += totalPart;
+						totalPart = 0;
+						output.Flush();
+					}
+				}
+			}
+			if (multipart)
+			{
+				UploadPartResponse lastPart = Space.UploadPart(path, uploadInfo.UploadId, partNumber, totalPart, output, true);
+				uploadParts.Add(lastPart);
+				totalUpload += totalPart;
+				CompleteMultipartUploadResponse complete = Space.CompleteMultipartUpload(path, uploadInfo.UploadId, uploadParts);
+			}
+			return total;
+		}
+
+		private string Store(string pathname)
+		{
+			string filepath = root + path + pathname;
+			if (!string.IsNullOrEmpty(pathname) && !string.IsNullOrWhiteSpace(pathname))
+			{
+				passiveListener.BeginAcceptTcpClient(DoStore, filepath);
+				return "150 Opening passive mode data transfer for STOR";
+			}
+			return "450 Bad file name";
+		}
+
+		private void DoStore(IAsyncResult result)
+		{
+			TcpClient dataClient = passiveListener.EndAcceptTcpClient(result);
+			string pathname = (string)result.AsyncState;
+			MemoryStream output = new MemoryStream();
+
+			using (NetworkStream dataStream = dataClient.GetStream())
+			{
+				long size = CopyStreamUpload(dataStream, output, 4096, pathname);
+				Space.UploadObject(pathname, output);
+			}
+			output.Close();
+			dataClient.Close();
+			SendMessage("226 Closing data connection, file transfered successful");
+		}
+
+		private byte[] CopyStreamToArray(MemoryStream input)
+		{
+			byte[] data = input.ToArray();
+			return data;
+		}
+
 		private string ChangeDirectory(string pathname)
 		{
-			if (pathname.EndsWith(".."))
+			if (pathname == "/")
 			{
-				int index = path.LastIndexOf("/");
-				if (index > 0)
-				{
-					path = path.Substring(0, index);
-				}
+				path = "/";
 			}
 			else
 			{
-				path += pathname;
+				if (pathname.StartsWith("/"))
+				{
+					//pathname = pathname.Remove(0, 1);
+					path = pathname + "/";
+					return string.Format("200 Changing to {0} directory", path);
+				}
+				if (pathname.EndsWith(".."))
+				{
+					int index = path.LastIndexOf("/");
+					if (index > 0)
+					{
+						path = path.Substring(0, index);
+					}
+					index = path.LastIndexOf("/");
+					if (index >= 0)
+					{
+						path = path.Substring(0, index + 1);
+					}
+				}
+				else
+				{
+					DirectoryObject newDir = ObjectsInDirectory.Find(x => x.Name == pathname && x.Type == ObjectType.Directory);
+					path = DeleteRootFromPath(newDir.Path);
+					//path += pathname;
+				}
 			}
 			return string.Format("200 Changing to {0} directory", path);
 		}
@@ -249,6 +435,13 @@ namespace S3FTPServer
 		{
 			return string.Format("{0}{1}", root, pathname);
 		}
+
+		private string DeleteRootFromPath(string pathname)
+		{
+			string newString = pathname.Remove(0, root.Length);
+			return newString;
+		}
+
 
 		private void SendMessage(string text)
 		{
