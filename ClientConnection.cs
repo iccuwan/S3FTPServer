@@ -313,23 +313,88 @@ namespace S3FTPServer
 			return total;
 		}
 
-		private long CopyStreamUpload(NetworkStream input, MemoryStream output, long bufferSize, string path)
+		private bool CopyStreamUpload(NetworkStream input, MemoryStream output, long bufferSize, string path)
 		{
 			byte[] buffer = new byte[bufferSize];
-			byte[] bigBuffer = new byte[15 * MB];
+			byte[] bigBuffer = new byte[5 * MB];
 			int count = 0;
 			long totalPart = 0;
 			int partNumber = 1;
 			long total = 0;
 			long totalUpload = 0;
+			int lastPos = 0;
 
 			bool multipart = false;
 			List<UploadPartResponse> uploadParts = new List<UploadPartResponse>();
 			InitiateMultipartUploadResponse uploadInfo = new InitiateMultipartUploadResponse();
 
-			while ((count = input.Read(bigBuffer, 0, bigBuffer.Length)) > 0)
+			int bytesRead;
+
+			/*
+			using (var stream = new MemoryStream())
 			{
-				output.Write(bigBuffer , 0, count);
+				while ((bytesRead = input.Read(buffer, 0, buffer.Length)) > 0)
+				{
+					stream.Write(buffer, 0, bytesRead);
+					total += bytesRead;
+					totalPart += bytesRead;
+					if (total >= 5 * MB)
+					{
+						if (!multipart)
+						{
+							uploadInfo = Space.InitMultipartUpload(path);
+							multipart = true;
+						}
+						UploadPartResponse uploadedPart = Space.UploadPart(path, uploadInfo.UploadId, partNumber, totalPart, stream, false);
+						uploadParts.Add(uploadedPart);
+						partNumber++;
+					}
+				}
+				if (multipart)
+				{
+					if (totalPart > 0)
+					{
+						UploadPartResponse lastPart = Space.UploadPart(path, uploadInfo.UploadId, partNumber, totalPart, stream, true);
+						uploadParts.Add(lastPart);
+					}
+					CompleteMultipartUploadResponse complete = Space.CompleteMultipartUpload(path, uploadInfo.UploadId, uploadParts);
+				}
+			}
+			*/
+
+			/*
+			while (input.DataAvailable)
+			{
+				input.CopyTo(output);
+				if (output.Length > 5 * MB)
+				{
+					if (!multipart)
+					{
+						uploadInfo = Space.InitMultipartUpload(path);
+						multipart = true;
+					}
+					else
+					{
+						UploadPartResponse uploadedPart = Space.UploadPart(path, uploadInfo.UploadId, partNumber, output.Length, output, false);
+						uploadParts.Add(uploadedPart);
+						partNumber++;
+						total += output.Length;
+						output.Flush();
+					}
+				}
+			}
+			if (multipart)
+			{
+				UploadPartResponse lastPart = Space.UploadPart(path, uploadInfo.UploadId, partNumber, output.Length, output, true);
+				uploadParts.Add(lastPart);
+				CompleteMultipartUploadResponse complete = Space.CompleteMultipartUpload(path, uploadInfo.UploadId, uploadParts);
+			}
+			*/
+
+			
+			while ((count = input.Read(buffer, 0, buffer.Length)) > 0)
+			{
+				output.Write(buffer , 0, count);
 				total += count;
 				totalPart += count;
 				if (totalPart > 5 * MB)
@@ -339,18 +404,21 @@ namespace S3FTPServer
 						uploadInfo = Space.InitMultipartUpload(path);
 						multipart = true;
 					}
-					else
-					{
-
-						UploadPartResponse uploadedPart = Space.UploadPart(path, uploadInfo.UploadId, partNumber, totalPart, output, false);
-						uploadParts.Add(uploadedPart);
-						partNumber++;
-						totalUpload += totalPart;
-						totalPart = 0;
-						output.Flush();
-					}
+					UploadPartResponse uploadedPart = Space.UploadPart(path, uploadInfo.UploadId, partNumber, totalPart, output, false);
+					uploadParts.Add(uploadedPart);
+					partNumber++;
+					totalUpload += totalPart;
+					totalPart = 0;
+					lastPos = 0;
+					output.Position = 0;
+					output.SetLength(0);
+				}
+				else
+				{
+					lastPos = (int)output.Length;
 				}
 			}
+			
 			if (multipart)
 			{
 				UploadPartResponse lastPart = Space.UploadPart(path, uploadInfo.UploadId, partNumber, totalPart, output, true);
@@ -358,7 +426,8 @@ namespace S3FTPServer
 				totalUpload += totalPart;
 				CompleteMultipartUploadResponse complete = Space.CompleteMultipartUpload(path, uploadInfo.UploadId, uploadParts);
 			}
-			return total;
+			
+			return multipart;
 		}
 
 		private string Store(string pathname)
@@ -380,8 +449,11 @@ namespace S3FTPServer
 
 			using (NetworkStream dataStream = dataClient.GetStream())
 			{
-				long size = CopyStreamUpload(dataStream, output, 4096, pathname);
-				Space.UploadObject(pathname, output);
+				bool multipart = CopyStreamUpload(dataStream, output, 4096, pathname);
+				if (!multipart)
+				{
+					Space.UploadObject(pathname, output);
+				}
 			}
 			output.Close();
 			dataClient.Close();

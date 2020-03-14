@@ -16,7 +16,7 @@ namespace S3FTPServer
 
 		public Api()
 		{
-			client = new RestClient("https://localhost:44343/api/ftp");
+			client = new RestClient("https://laun.mta-store.com/api/ftp");
 		}
 
 		public static bool LoginExists(string login)
