@@ -121,6 +121,15 @@ namespace S3FTPServer
 							case "STOR":
 								response = Store(arguments);
 								break;
+							case "DELE":
+								response = Delete(arguments, ObjectType.File);
+								break;
+							case "MKD":
+								response = CreateDirectory(arguments);
+								break;
+							case "RMD":
+								response = Delete(arguments, ObjectType.Directory);
+								break;
 							default:
 								response = "502 Command not implemented";
 								break;
@@ -156,9 +165,18 @@ namespace S3FTPServer
 			SendMessage("503 Timeout");
 		}
 
-		private string Delete(string pathname)
+		private string CreateDirectory(string pathname)
 		{
-			return "Idi nahuy";
+			string fullPath = root + path + pathname + "/";
+			Space.CreateDirectory(fullPath);
+			return string.Format("250 {0} created", '"' + pathname + '"');
+		}
+
+		private string Delete(string pathname, ObjectType type)
+		{
+			DirectoryObject obj = FindObject(pathname, type);
+			Space.DeleteObject(obj.Path);
+			return string.Format("250 {0} deleted", type.ToString());
 		}
 
 		private string User(string _username)
@@ -179,6 +197,7 @@ namespace S3FTPServer
 				password = _password;
 				root = info.serverId.ToString();
 				loggedIn = true;
+				UpdateObjectsList(path);
 				return "230 Logged in";
 			}
 			return "502";
@@ -276,6 +295,42 @@ namespace S3FTPServer
 			}
 		}
 
+		private void UpdateObjectsList(string pathname)
+		{
+			List<S3Object> objects = Space.GetObjects(GetValidPath(pathname));
+			ObjectsInDirectory.Clear();
+			Console.WriteLine("Objects list cleared");
+			foreach (S3Object obj in objects)
+			{
+				string filename = DeletePathFromObjectKey(obj.Key);
+				int count = filename.Split('/').Length - 1;
+				if (count == 1 && filename.EndsWith('/') || count == 0 && !string.IsNullOrEmpty(filename))
+				{
+
+					string date = obj.LastModified < DateTime.Now - TimeSpan.FromDays(180) ?
+						obj.LastModified.ToString("MMM dd yyyy", enCulture) :
+						obj.LastModified.ToString("MMM dd HH:mm", enCulture);
+					string line;
+					DirectoryObject dirObj;
+					if (obj.Key.EndsWith("/"))
+					{
+						filename = filename.Remove(filename.Length - 1);
+						line = string.Format("drwxr-xr-x    2 {3}     {3}     {0,8} {1} {2}",
+							"4096", date, filename, login);
+						dirObj = new DirectoryObject(filename, obj.Key, ObjectType.Directory);
+					}
+					else
+					{
+						line = string.Format("-rw-r--r-- 2 {3} {3}           {0,8} {1} {2}",
+							obj.Size, date, filename, login);
+						dirObj = new DirectoryObject(filename, obj.Key, ObjectType.File);
+					}
+					ObjectsInDirectory.Add(dirObj);
+					Console.WriteLine("{0} {1} added to objects list", dirObj.Type.ToString(), filename);
+				}
+			}
+		}
+
 		private string Retrieve(string pathname)
 		{
 			//DirectoryObject file = ObjectsInDirectory.Find(x => x.Name == pathname && x.Type == ObjectType.File);
@@ -366,6 +421,7 @@ namespace S3FTPServer
 		private string Store(string pathname)
 		{
 			string filepath = root + path + pathname;
+			filepath = Regex.Replace(filepath, @"\s+", string.Empty);
 			if (!string.IsNullOrEmpty(pathname) && !string.IsNullOrWhiteSpace(pathname))
 			{
 				passiveListener.BeginAcceptTcpClient(DoStore, filepath);
@@ -391,12 +447,6 @@ namespace S3FTPServer
 			output.Close();
 			dataClient.Close();
 			SendMessage("226 Closing data connection, file transfered successful");
-		}
-
-		private byte[] CopyStreamToArray(MemoryStream input)
-		{
-			byte[] data = input.ToArray();
-			return data;
 		}
 
 		private string ChangeDirectory(string pathname)
@@ -433,6 +483,7 @@ namespace S3FTPServer
 					//path += pathname;
 				}
 			}
+			UpdateObjectsList(path);
 			return string.Format("200 Changing to {0} directory", path);
 		}
 
@@ -458,6 +509,12 @@ namespace S3FTPServer
 		{
 			string name = Regex.Replace(key, root + path, "");
 			return name;
+		}
+
+		private DirectoryObject FindObject(string name, ObjectType type)
+		{
+			DirectoryObject obj = ObjectsInDirectory.Find(x => x.Name == name && x.Type == type);
+			return obj;
 		}
 	}
 }
