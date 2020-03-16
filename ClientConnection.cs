@@ -156,6 +156,11 @@ namespace S3FTPServer
 			SendMessage("503 Timeout");
 		}
 
+		private string Delete(string pathname)
+		{
+			return "Idi nahuy";
+		}
+
 		private string User(string _username)
 		{
 			if (Api.LoginExists(_username))
@@ -316,81 +321,15 @@ namespace S3FTPServer
 		private bool CopyStreamUpload(NetworkStream input, MemoryStream output, long bufferSize, string path)
 		{
 			byte[] buffer = new byte[bufferSize];
-			byte[] bigBuffer = new byte[5 * MB];
-			int count = 0;
+			int count;
 			long totalPart = 0;
 			int partNumber = 1;
 			long total = 0;
 			long totalUpload = 0;
-			int lastPos = 0;
 
 			bool multipart = false;
 			List<UploadPartResponse> uploadParts = new List<UploadPartResponse>();
 			InitiateMultipartUploadResponse uploadInfo = new InitiateMultipartUploadResponse();
-
-			int bytesRead;
-
-			/*
-			using (var stream = new MemoryStream())
-			{
-				while ((bytesRead = input.Read(buffer, 0, buffer.Length)) > 0)
-				{
-					stream.Write(buffer, 0, bytesRead);
-					total += bytesRead;
-					totalPart += bytesRead;
-					if (total >= 5 * MB)
-					{
-						if (!multipart)
-						{
-							uploadInfo = Space.InitMultipartUpload(path);
-							multipart = true;
-						}
-						UploadPartResponse uploadedPart = Space.UploadPart(path, uploadInfo.UploadId, partNumber, totalPart, stream, false);
-						uploadParts.Add(uploadedPart);
-						partNumber++;
-					}
-				}
-				if (multipart)
-				{
-					if (totalPart > 0)
-					{
-						UploadPartResponse lastPart = Space.UploadPart(path, uploadInfo.UploadId, partNumber, totalPart, stream, true);
-						uploadParts.Add(lastPart);
-					}
-					CompleteMultipartUploadResponse complete = Space.CompleteMultipartUpload(path, uploadInfo.UploadId, uploadParts);
-				}
-			}
-			*/
-
-			/*
-			while (input.DataAvailable)
-			{
-				input.CopyTo(output);
-				if (output.Length > 5 * MB)
-				{
-					if (!multipart)
-					{
-						uploadInfo = Space.InitMultipartUpload(path);
-						multipart = true;
-					}
-					else
-					{
-						UploadPartResponse uploadedPart = Space.UploadPart(path, uploadInfo.UploadId, partNumber, output.Length, output, false);
-						uploadParts.Add(uploadedPart);
-						partNumber++;
-						total += output.Length;
-						output.Flush();
-					}
-				}
-			}
-			if (multipart)
-			{
-				UploadPartResponse lastPart = Space.UploadPart(path, uploadInfo.UploadId, partNumber, output.Length, output, true);
-				uploadParts.Add(lastPart);
-				CompleteMultipartUploadResponse complete = Space.CompleteMultipartUpload(path, uploadInfo.UploadId, uploadParts);
-			}
-			*/
-
 			
 			while ((count = input.Read(buffer, 0, buffer.Length)) > 0)
 			{
@@ -409,13 +348,8 @@ namespace S3FTPServer
 					partNumber++;
 					totalUpload += totalPart;
 					totalPart = 0;
-					lastPos = 0;
 					output.Position = 0;
 					output.SetLength(0);
-				}
-				else
-				{
-					lastPos = (int)output.Length;
 				}
 			}
 			
@@ -423,7 +357,6 @@ namespace S3FTPServer
 			{
 				UploadPartResponse lastPart = Space.UploadPart(path, uploadInfo.UploadId, partNumber, totalPart, output, true);
 				uploadParts.Add(lastPart);
-				totalUpload += totalPart;
 				CompleteMultipartUploadResponse complete = Space.CompleteMultipartUpload(path, uploadInfo.UploadId, uploadParts);
 			}
 			
@@ -449,7 +382,7 @@ namespace S3FTPServer
 
 			using (NetworkStream dataStream = dataClient.GetStream())
 			{
-				bool multipart = CopyStreamUpload(dataStream, output, 4096, pathname);
+				bool multipart = CopyStreamUpload(dataStream, output, 2048, pathname);
 				if (!multipart)
 				{
 					Space.UploadObject(pathname, output);
