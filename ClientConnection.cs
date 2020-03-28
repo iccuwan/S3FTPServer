@@ -26,6 +26,8 @@ namespace S3FTPServer
 		private string path = "/";
 		private string transferType;
 
+		private DirectoryObject renameObject;
+
 		private const long MB = 1024 * 1024;
 
 		private CultureInfo enCulture = CultureInfo.CreateSpecificCulture("en-US");
@@ -39,8 +41,6 @@ namespace S3FTPServer
 
 		private Api api;
 		private ScalewaySpace Space;
-
-		private Timer errorTimer;
 
 		public List<DirectoryObject> ObjectsInDirectory = new List<DirectoryObject>();
 
@@ -80,10 +80,6 @@ namespace S3FTPServer
 					}
 					if (response == null)
 					{
-						if (errorTimer != null)
-						{
-							errorTimer.Close();
-						}
 						switch (cmd)
 						{
 							case "USER":
@@ -119,6 +115,7 @@ namespace S3FTPServer
 								response = Retrieve(arguments);
 								break;
 							case "STOR":
+								string test = CreateDirectory(path);
 								response = Store(arguments);
 								break;
 							case "DELE":
@@ -129,6 +126,12 @@ namespace S3FTPServer
 								break;
 							case "RMD":
 								response = Delete(arguments, ObjectType.Directory);
+								break;
+							case "RNFR":
+								response = RenameObject(arguments);
+								break;
+							case "RNTO":
+								response = RenameObjectTo(arguments);
 								break;
 							default:
 								response = "502 Command not implemented";
@@ -141,10 +144,6 @@ namespace S3FTPServer
 					}
 					else
 					{
-						if (errorTimer != null)
-						{
-							errorTimer.Close();
-						}
 						SendMessage(response);
 						if (response.StartsWith("221"))
 						{
@@ -156,18 +155,77 @@ namespace S3FTPServer
 			catch (Exception e)
 			{
 				Console.WriteLine("Client connection exception: {0}", e.ToString());
-				//client.Close();
+				client.Close();
 			}
 		}
 
-		private void Timeout(Object source, ElapsedEventArgs e)
+		private string RenameObject(string pathname)
 		{
-			SendMessage("503 Timeout");
+			UpdateObjectsList(path);
+			ObjectType type;
+			if (pathname.EndsWith('/'))
+			{
+				type = ObjectType.Directory;
+			}
+			else
+			{
+				type = ObjectType.File;
+			}
+			DirectoryObject obj = FindObject(pathname, type);
+			if (obj != null)
+			{
+				renameObject = obj;
+				return "350 Waiting new file name";
+			}
+			else
+			{
+				if (type == ObjectType.Directory)
+				{
+					type = ObjectType.File;
+				}
+				else
+				{
+					type = ObjectType.Directory;
+				}
+				DirectoryObject obj2 = FindObject(pathname, type);
+				if (obj2 != null)
+				{
+					renameObject = obj2;
+					return "350 Waiting new file name";
+				}
+			}
+			return "550 File not found";
+		}
+
+		private string RenameObjectTo(string pathname)
+		{
+			if (pathname.StartsWith('/'))
+			{
+				pathname = root + pathname;
+			}
+			else
+			{
+				pathname = string.Format("{0}/{1}", root, pathname);
+			}
+			bool response = Space.RenameObject(renameObject.Path, pathname);
+			if (response)
+			{
+				return "250 OK";
+			}
+			return "501 Error";
 		}
 
 		private string CreateDirectory(string pathname)
 		{
-			string fullPath = root + path + pathname + "/";
+			string fullPath;
+			if (!pathname.StartsWith('/'))
+			{
+				fullPath = root + path + pathname + "/";
+			}
+			else
+			{
+				fullPath = root + pathname;
+			}
 			Space.CreateDirectory(fullPath);
 			return string.Format("250 {0} created", '"' + pathname + '"');
 		}
