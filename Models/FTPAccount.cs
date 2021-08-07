@@ -4,6 +4,7 @@ using System.Text;
 
 namespace S3FTPServer.Models
 {
+	[Obsolete]
 	class FTPAccount
 	{
 		public int id;

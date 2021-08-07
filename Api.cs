@@ -10,6 +10,7 @@ using ScalewaySpaces;
 
 namespace S3FTPServer
 {
+	[Obsolete]
 	class Api
 	{
 		private static IRestClient client;

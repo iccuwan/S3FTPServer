@@ -6,7 +6,6 @@ using System.Net.Sockets;
 using System.IO;
 using System.Globalization;
 using RestSharp;
-using static S3FTPServer.Api;
 using ScalewaySpaces;
 using Amazon.S3.Model;
 using System.Text.RegularExpressions;
@@ -39,20 +38,19 @@ namespace S3FTPServer
 
 		private TcpListener passiveListener;
 
-		private Api api;
+		//private Api api;
 		private ScalewaySpace Space;
 
 		public List<DirectoryObject> ObjectsInDirectory = new List<DirectoryObject>();
 
-		public ClientConnection(TcpClient _client, Api _api, ScalewaySpace _space)
+		public ClientConnection(TcpClient _client, ScalewaySpace _space)
 		{
 			client = _client;
-			api = _api;
 			Space = _space;
 
 			stream = client.GetStream();
-			streamReader = new StreamReader(stream);
-			streamWriter = new StreamWriter(stream);
+			streamReader = new StreamReader(stream, Encoding.ASCII);
+			streamWriter = new StreamWriter(stream, Encoding.ASCII);
 
 			HandleConnection();
 		}
@@ -115,7 +113,7 @@ namespace S3FTPServer
 								response = Retrieve(arguments);
 								break;
 							case "STOR":
-								string test = CreateDirectory(path);
+								//string test = CreateDirectory(path);
 								response = Store(arguments);
 								break;
 							case "DELE":
@@ -130,9 +128,10 @@ namespace S3FTPServer
 							case "RNFR":
 								response = RenameObject(arguments);
 								break;
-							case "RNTO":
+							/*case "RNTO":
 								response = RenameObjectTo(arguments);
 								break;
+							*/
 							default:
 								response = "502 Command not implemented";
 								break;
@@ -205,7 +204,11 @@ namespace S3FTPServer
 			}
 			else
 			{
-				pathname = string.Format("{0}/{1}", root, pathname);
+				pathname = string.Format("{0}{2}{1}", root, pathname, path);
+			}
+			if (renameObject.Type == ObjectType.Directory)
+			{
+				pathname += "/";
 			}
 			bool response = Space.RenameObject(renameObject.Path, pathname);
 			if (response)
@@ -233,13 +236,23 @@ namespace S3FTPServer
 		private string Delete(string pathname, ObjectType type)
 		{
 			DirectoryObject obj = FindObject(pathname, type);
-			Space.DeleteObject(obj.Path);
+			if (obj != null)
+			{
+				Space.DeleteObject(obj.Path);
+			}
 			return string.Format("250 {0} deleted", type.ToString());
 		}
 
 		private string User(string _username)
 		{
+			/*
 			if (Api.LoginExists(_username))
+			{
+				login = _username;
+				return "331 Login ok, need password";
+			}
+			*/
+			if (Server.DB.LoginExists(_username))
 			{
 				login = _username;
 				return "331 Login ok, need password";
@@ -249,11 +262,11 @@ namespace S3FTPServer
 
 		private string Password(string _password)
 		{
-			AuthInfo info = Api.Auth(login, _password);
-			if (info.password == _password)
+			AccInfo info = Server.DB.Auth(login, _password);
+			if (info.Password == _password)
 			{
 				password = _password;
-				root = info.serverId.ToString();
+				root = info.ServerId.ToString();
 				loggedIn = true;
 				UpdateObjectsList(path);
 				return "230 Logged in";
@@ -361,6 +374,8 @@ namespace S3FTPServer
 			foreach (S3Object obj in objects)
 			{
 				string filename = DeletePathFromObjectKey(obj.Key);
+				MetadataCollection meta = Space.GetObjectMeta(obj);
+				//filename = meta["name"];
 				int count = filename.Split('/').Length - 1;
 				if (count == 1 && filename.EndsWith('/') || count == 0 && !string.IsNullOrEmpty(filename))
 				{
@@ -431,7 +446,7 @@ namespace S3FTPServer
 			return total;
 		}
 
-		private bool CopyStreamUpload(NetworkStream input, MemoryStream output, long bufferSize, string path)
+		private bool CopyStreamUpload(NetworkStream input, MemoryStream output, long bufferSize, string path, string name)
 		{
 			byte[] buffer = new byte[bufferSize];
 			int count;
@@ -453,7 +468,7 @@ namespace S3FTPServer
 				{
 					if (!multipart)
 					{
-						uploadInfo = Space.InitMultipartUpload(path);
+						uploadInfo = Space.InitMultipartUpload(path, name);
 						multipart = true;
 					}
 					UploadPartResponse uploadedPart = Space.UploadPart(path, uploadInfo.UploadId, partNumber, totalPart, output, false);
@@ -482,7 +497,22 @@ namespace S3FTPServer
 			filepath = Regex.Replace(filepath, @"\s+", string.Empty);
 			if (!string.IsNullOrEmpty(pathname) && !string.IsNullOrWhiteSpace(pathname))
 			{
-				passiveListener.BeginAcceptTcpClient(DoStore, filepath);
+				string dir = path;
+				var strAr = dir.Split('/', StringSplitOptions.RemoveEmptyEntries);
+				while (strAr.Length != 0)
+				{
+					string dirPath = string.Join('/', strAr);
+					dirPath += '/';
+					if (!Space.Exists(root + '/' + dirPath))
+					{
+						Space.CreateDirectory(root + '/' + dirPath);
+					}
+					Array.Resize(ref strAr, strAr.Length - 1);
+				}
+				string[] data = new string[2];
+				data[0] = filepath;
+				data[1] = pathname;
+				passiveListener.BeginAcceptTcpClient(DoStore, data);
 				return "150 Opening passive mode data transfer for STOR";
 			}
 			return "450 Bad file name";
@@ -491,15 +521,15 @@ namespace S3FTPServer
 		private void DoStore(IAsyncResult result)
 		{
 			TcpClient dataClient = passiveListener.EndAcceptTcpClient(result);
-			string pathname = (string)result.AsyncState;
+			string[] data = (string[])result.AsyncState;
 			MemoryStream output = new MemoryStream();
 
 			using (NetworkStream dataStream = dataClient.GetStream())
 			{
-				bool multipart = CopyStreamUpload(dataStream, output, 2048, pathname);
+				bool multipart = CopyStreamUpload(dataStream, output, 2048, data[0], data[1]);
 				if (!multipart)
 				{
-					Space.UploadObject(pathname, output);
+					Space.UploadObject(data[0], output, data[1]);
 				}
 			}
 			output.Close();

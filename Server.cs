@@ -16,15 +16,15 @@ namespace S3FTPServer
 		public IPAddress serverIP;
 		public int serverPort = 21;
 		//public IRestClient api = new RestClient("https://localhost:44343/api/ftp/");
-		public Api api;
 		public static ScalewaySpace Space;
+		public static FTPDatabase DB { get; set; }
 		
 		public Server()
 		{
 			serverIP = GetLocalIPAddress();
 			Console.WriteLine("Starting Server {0}:{1}", serverIP, serverPort);
-			api = new Api();
 			Space = new ScalewaySpace();
+			DB = new FTPDatabase("135.181.201.237", "gms", "6dIbkgyVe6zw6Kpr", "gms");
 			server = new TcpListener(serverIP, serverPort);
 			server.Start();
 			StartListener();
@@ -53,7 +53,7 @@ namespace S3FTPServer
 
 		private void HandleDevice(Object obj)
 		{
-			ClientConnection _connection = new ClientConnection((TcpClient)obj, api, Space);
+			ClientConnection _connection = new ClientConnection((TcpClient)obj, Space);
 			/*
 			TcpClient client = (TcpClient)obj;
 			NetworkStream stream = client.GetStream();
